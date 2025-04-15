@@ -1,59 +1,122 @@
-
-from dronekit import connect, VehicleMode, LocationGlobalRelative
-from pymavlink import mavutil
 import time
-import argparse  
-parser = argparse.ArgumentParser()
-parser.add_argument('--connect', default='127.0.0.1:14550')    
-args = parser.parse_args()
+import serial  # Import serial library for communication
+from dronekit import connect, VehicleMode, LocationGlobalRelative
+
+# Set initial takeoff coordinates and target coordinates
+initial_takeoff_lat = 10.090776  # Example starting latitude
+initial_takeoff_lon = 76.324943  # Example starting longitude
+target_lat = 10.090776  # Example target latitude
+target_lon = 76.324943  # Example target longitude
 
 # Connect to the Vehicle
-print ('Connecting to vehicle on: %s' % args.connect)
-vehicle = connect(args.connect, baud=57600, wait_ready=True)
+connection_string = '/dev/ttyACM0'  # For Linux (USB connection)
+# connection_string = 'com9'  # For Windows
+print(f'Connecting to vehicle on: {connection_string}')
+vehicle = connect(connection_string, wait_ready=True)
 
-# Function to arm and then takeoff to a user specified altitude
+# **Setup Serial Communication to Arduino**
+try:
+    arduino = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)  # Open serial port
+    time.sleep(2)  # Wait for the connection to establish
+    print("Serial communication with Arduino established.")
+except Exception as e:
+    print(f"Error opening serial port: {e}")
+    arduino = None  # Set to None if unavailable
+
+
+def check_gps_lock():
+    """Ensure the vehicle has a good GPS lock before arming."""
+    print("Checking GPS signal...")
+    while vehicle.gps_0.fix_type < 2:  # Minimum 3D Fix
+        print(f" Waiting for GPS lock... Satellites: {vehicle.gps_0.satellites_visible}")
+        time.sleep(1)
+    print("GPS lock acquired!")
+
+
 def arm_and_takeoff(aTargetAltitude):
+    """Arms vehicle and flies to aTargetAltitude."""
+    print("Performing basic pre-arm checks...")
+    while not vehicle.is_armable:
+        print(" Waiting for vehicle to initialize...")
+        time.sleep(1)
 
-  print ("Basic pre-arm checks")
-  # Don't let the user try to arm until autopilot is ready
-  while not vehicle.is_armable:
-    print (" Waiting for vehicle to initialize...")
-    time.sleep(1)
-        
-  print ("Arming motors")
-  # Copter should arm in GUIDED mode
-  vehicle.mode    = VehicleMode("GUIDED")
-  vehicle.armed   = True
+    check_gps_lock()
 
-  while not vehicle.armed:
-    print (" Waiting for arming...")
-    time.sleep(1)
+    print("Arming motors...")
+    vehicle.mode = VehicleMode("GUIDED")
 
-  print ("Taking off!")
-  vehicle.simple_takeoff(aTargetAltitude) # Take off to target altitude
+    while vehicle.mode.name != "GUIDED":
+        print(" Waiting for mode change to GUIDED...")
+        time.sleep(1)
 
-  # Check that vehicle has reached takeoff altitude
-  while True:
-    print (" Altitude: ", vehicle.location.global_relative_frame.alt) 
-    #Break and return from function just below target altitude.        
-    if vehicle.location.global_relative_frame.alt>=aTargetAltitude*0.95: 
-      print ("Reached target altitude")
-      break
-    time.sleep(1)
-    
-def Land():
-##This function ensures that the vehicle has landed (before vechile.close is called)
+    vehicle.armed = True
 
-  print("Landing")
-  ##thread_distance.join()
-  time.sleep(1)
-  vehicle.mode = VehicleMode("LAND")
-  while vehicle.armed:
-    time.sleep(1)
-  vehicle.close()
+    while not vehicle.armed:
+        print(" Waiting for arming...")
+        time.sleep(1)
 
-arm_and_takeoff(20) ##arm and reach 20m alt 
+    print("Taking off!")
+    vehicle.simple_takeoff(aTargetAltitude)
 
+    while True:
+        print(f" Altitude: {vehicle.location.global_relative_frame.alt:.2f} meters")
+        if vehicle.location.global_relative_frame.alt >= aTargetAltitude * 0.95:
+            print("Reached target altitude")
+            break
+        time.sleep(1)
+
+
+def wait_for_position(target_location, threshold=0.00003):
+    """Wait until the drone reaches the target location."""
+    print("Navigating to target location...")
+    while True:
+        current_location = vehicle.location.global_relative_frame
+        distance = ((current_location.lat - target_location.lat) ** 2 +
+                    (current_location.lon - target_location.lon) ** 2) ** 0.5
+        print(f" Distance to target: {distance:.6f} degrees (~{distance * 111320:.2f} meters)")
+
+        if distance < threshold:
+            print("Target location reached.")
+            break
+        time.sleep(1)
+
+
+# **Flight Execution**
+arm_and_takeoff(10)  # Takeoff to 10 meters
+
+# **Go to Target Location**
+target_location = LocationGlobalRelative(target_lat, target_lon, 10)
+vehicle.simple_goto(target_location)
+
+wait_for_position(target_location)  # Wait until the drone reaches the target
+
+# **Send Serial Command to Arduino**
+if arduino:
+    try:
+        arduino.write(b'o')  # Send "o" as a byte
+        print('Sent "o" to Arduino')
+    except Exception as e:
+        print(f"Error sending data to Arduino: {e}")
+
+# **Hover at Target Location for 10 seconds**
+print("Hovering at target location...")
 time.sleep(10)
 
-Land()
+# **Return to Launch (RTL)**
+print("Returning to Launch...")
+vehicle.mode = VehicleMode("RTL")
+
+# Wait until the vehicle lands
+while vehicle.location.global_relative_frame.alt > 1:
+    print(f" Descending... Altitude: {vehicle.location.global_relative_frame.alt:.2f} meters")
+    time.sleep(1)
+
+print("Landed successfully.")
+
+# **Close Serial and Vehicle Connection**
+if arduino:
+    arduino.close()
+    print("Closed serial connection to Arduino.")
+
+print("Closing vehicle connection...")
+vehicle.close()
