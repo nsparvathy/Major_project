@@ -1,0 +1,35 @@
+import socket
+import subprocess
+
+# Define the IP and port to listen on
+listen_ip = "0.0.0.0"  # Listen on all available interfaces
+listen_port = 12345  # Must match the sender's port
+
+# Create a UDP socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((listen_ip, listen_port))
+
+print(f"Listening for UDP messages on {listen_ip}:{listen_port}...")
+
+# Flag to track if the script has been executed
+script_executed = False
+
+try:
+    while True:
+        # Receive message (buffer size 1024 bytes)
+        data, addr = sock.recvfrom(1024)
+        message = data.decode()
+
+        print(f"Received message: {message} from {addr}")
+
+        # Run fly.py only once when a message is received
+        if not script_executed:
+            print("Running fly.py...")
+            subprocess.Popen(["python3", "fly.py"])  # Run in a separate process
+            script_executed = True  # Set flag to prevent re-running
+
+except KeyboardInterrupt:
+    print("Server stopped.")
+
+finally:
+    sock.close()
